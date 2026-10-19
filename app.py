@@ -1,144 +1,181 @@
-"""Cloud-safe interactive 3D wave app.
-
-This version does not invoke Manim, FFmpeg, LaTeX, Cairo, or subprocesses.
-It therefore avoids native dependency installation failures on Streamlit Cloud.
-"""
+"""Streamlit app that renders a genuine Manim MP4 file."""
 from __future__ import annotations
 
-import numpy as np
-import plotly.graph_objects as go
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
 import streamlit as st
 
-st.set_page_config(page_title="Interactive 3D Wave", page_icon="🎥", layout="wide")
 
-COLOR_MAP = {
-    "BLUE": "#1f77b4",
-    "RED": "#d62728",
-    "GREEN": "#2ca02c",
-    "PURPLE": "#9467bd",
+st.set_page_config(
+    page_title="Manim 3D Wave Renderer",
+    page_icon="🎥",
+    layout="wide",
+)
+
+MANIM_COLORS = {
+    "Blue": "BLUE",
+    "Red": "RED",
+    "Green": "GREEN",
+    "Purple": "PURPLE",
+    "Yellow": "YELLOW",
+    "Teal": "TEAL",
+}
+
+QUALITY_OPTIONS = {
+    "Low quality (480p, fastest)": "l",
+    "Medium quality (720p)": "m",
+    "High quality (1080p)": "h",
 }
 
 
-def build_wave_figure(
-    color: str,
+def build_scene_code(
+    color_constant: str,
     amplitude: float,
     frequency: float,
-    phase_speed: float,
-    frame_count: int,
-) -> go.Figure:
-    """Create an animated 3D sinusoidal wave using Plotly frames."""
-    x = np.linspace(-2 * np.pi, 2 * np.pi, 500)
-    phases = np.linspace(0, 2 * np.pi, frame_count, endpoint=False)
+    rotation_rate: float,
+) -> str:
+    """Return the Manim scene source code for the selected settings."""
+    return f'''from manim import *
+import numpy as np
 
-    def coordinates(phase: float) -> tuple[np.ndarray, np.ndarray]:
-        y = amplitude * np.sin(frequency * x - phase_speed * phase)
-        z = 0.30 * amplitude * np.cos(frequency * x - phase_speed * phase)
-        return y, z
 
-    initial_y, initial_z = coordinates(phases[0])
-    line_color = COLOR_MAP[color]
+class StreamlitWave(ThreeDScene):
+    def construct(self):
+        axes = ThreeDAxes(
+            x_range=[-7, 7, 1],
+            y_range=[-3, 3, 1],
+            z_range=[-2, 2, 1],
+            x_length=11,
+            y_length=5,
+            z_length=3,
+        )
 
-    figure = go.Figure(
-        data=[
-            go.Scatter3d(
-                x=x,
-                y=initial_y,
-                z=initial_z,
-                mode="lines",
-                line={"color": line_color, "width": 8},
-                name="Wave",
+        self.set_camera_orientation(phi=70 * DEGREES, theta=-35 * DEGREES)
+
+        wave = ParametricFunction(
+            lambda t: axes.c2p(
+                t,
+                {amplitude:.6f} * np.sin({frequency:.6f} * t),
+                0.30 * {amplitude:.6f} * np.cos({frequency:.6f} * t),
+            ),
+            t_range=[-2 * PI, 2 * PI],
+            color={color_constant},
+            stroke_width=6,
+        )
+
+        self.play(Create(axes), run_time=1.0)
+        self.play(Create(wave), run_time=1.5)
+        self.begin_ambient_camera_rotation(rate={rotation_rate:.6f})
+        self.wait(3.0)
+        self.stop_ambient_camera_rotation()
+        self.wait(0.5)
+'''
+
+
+def render_manim_video(
+    scene_code: str,
+    quality_flag: str,
+) -> tuple[bytes | None, str]:
+    """Render the scene and return MP4 bytes plus the Manim terminal log."""
+    if shutil.which("ffmpeg") is None:
+        return None, "FFmpeg is not installed. Check packages.txt deployment."
+
+    with tempfile.TemporaryDirectory(prefix="manim_streamlit_") as temp_dir:
+        work_dir = Path(temp_dir)
+        scene_file = work_dir / "wave_scene.py"
+        media_dir = work_dir / "media"
+        scene_file.write_text(scene_code, encoding="utf-8")
+
+        command = [
+            sys.executable,
+            "-m",
+            "manim",
+            str(scene_file),
+            "StreamlitWave",
+            f"-q{quality_flag}",
+            "--media_dir",
+            str(media_dir),
+            "--disable_caching",
+            "--format",
+            "mp4",
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
             )
-        ],
-        frames=[
-            go.Frame(
-                name=str(index),
-                data=[
-                    go.Scatter3d(
-                        x=x,
-                        y=coordinates(phase)[0],
-                        z=coordinates(phase)[1],
-                        mode="lines",
-                        line={"color": line_color, "width": 8},
-                    )
-                ],
-            )
-            for index, phase in enumerate(phases)
-        ],
-    )
+        except subprocess.TimeoutExpired as error:
+            partial_log = (error.stdout or "") + "\n" + (error.stderr or "")
+            return None, "Rendering exceeded the 300-second safety limit.\n" + partial_log
 
-    figure.update_layout(
-        height=700,
-        margin={"l": 0, "r": 0, "t": 50, "b": 0},
-        title="Animated 3D Wave",
-        scene={
-            "xaxis_title": "X",
-            "yaxis_title": "Amplitude",
-            "zaxis_title": "Depth",
-            "xaxis": {"range": [-2 * np.pi, 2 * np.pi]},
-            "yaxis": {"range": [-2.2 * amplitude, 2.2 * amplitude]},
-            "zaxis": {"range": [-1.2 * amplitude, 1.2 * amplitude]},
-            "camera": {"eye": {"x": 1.7, "y": 1.7, "z": 1.1}},
-            "aspectmode": "manual",
-            "aspectratio": {"x": 2.4, "y": 1.0, "z": 0.7},
-        },
-        updatemenus=[
-            {
-                "type": "buttons",
-                "direction": "left",
-                "x": 0.5,
-                "xanchor": "center",
-                "y": 0.02,
-                "yanchor": "bottom",
-                "buttons": [
-                    {
-                        "label": "Play",
-                        "method": "animate",
-                        "args": [
-                            None,
-                            {
-                                "frame": {"duration": 45, "redraw": True},
-                                "transition": {"duration": 0},
-                                "fromcurrent": True,
-                                "mode": "immediate",
-                            },
-                        ],
-                    },
-                    {
-                        "label": "Pause",
-                        "method": "animate",
-                        "args": [
-                            [None],
-                            {
-                                "frame": {"duration": 0, "redraw": False},
-                                "transition": {"duration": 0},
-                                "mode": "immediate",
-                            },
-                        ],
-                    },
-                ],
-            }
-        ],
-    )
-    return figure
+        terminal_log = (
+            f"Command: {' '.join(command)}\n\n"
+            f"STDOUT:\n{completed.stdout}\n\n"
+            f"STDERR:\n{completed.stderr}"
+        )
+
+        if completed.returncode != 0:
+            return None, terminal_log
+
+        videos = sorted(media_dir.rglob("StreamlitWave.mp4"))
+        if not videos:
+            return None, terminal_log + "\n\nNo MP4 output file was found."
+
+        return videos[-1].read_bytes(), terminal_log
 
 
-st.title("Interactive 3D Wave Generator")
-st.caption("Cloud-safe animation without Manim, LaTeX, FFmpeg, or OS packages.")
+st.title("Manim-rendered 3D Wave MP4")
+st.write(
+    "This app runs the Manim renderer on the Streamlit server and produces "
+    "a genuine MP4 file for preview and download."
+)
 
 with st.sidebar:
-    st.header("Wave settings")
-    color_choice = st.selectbox("Wave color", list(COLOR_MAP))
-    amplitude = st.slider("Amplitude", 0.25, 3.0, 1.0, 0.05)
+    st.header("Animation settings")
+    color_name = st.selectbox("Wave color", list(MANIM_COLORS))
+    amplitude = st.slider("Amplitude", 0.25, 2.5, 1.0, 0.05)
     frequency = st.slider("Frequency", 0.25, 4.0, 1.0, 0.05)
-    phase_speed = st.slider("Motion speed", 0.25, 4.0, 1.0, 0.05)
-    frame_count = st.slider("Animation frames", 20, 120, 60, 10)
+    rotation_rate = st.slider("Camera rotation rate", 0.05, 0.50, 0.20, 0.05)
+    quality_name = st.selectbox("Output quality", list(QUALITY_OPTIONS))
 
-figure = build_wave_figure(
-    color=color_choice,
+scene_code = build_scene_code(
+    color_constant=MANIM_COLORS[color_name],
     amplitude=amplitude,
     frequency=frequency,
-    phase_speed=phase_speed,
-    frame_count=frame_count,
+    rotation_rate=rotation_rate,
 )
-st.plotly_chart(figure, use_container_width=True)
-st.info("Use Play/Pause below the chart. Drag the chart to rotate the 3D view.")
+
+with st.expander("Preview generated Manim source code"):
+    st.code(scene_code, language="python")
+
+if st.button("Render Manim MP4", type="primary", use_container_width=True):
+    with st.spinner("Rendering the Manim scene..."):
+        video_bytes, render_log = render_manim_video(
+            scene_code=scene_code,
+            quality_flag=QUALITY_OPTIONS[quality_name],
+        )
+
+    if video_bytes is not None:
+        st.success("Manim rendering completed successfully.")
+        st.video(video_bytes, format="video/mp4")
+        st.download_button(
+            "Download Manim MP4",
+            data=video_bytes,
+            file_name="StreamlitWave.mp4",
+            mime="video/mp4",
+            use_container_width=True,
+        )
+    else:
+        st.error("Manim rendering failed. Open the terminal log below for the exact cause.")
+
+    with st.expander("Manim terminal log", expanded=video_bytes is None):
+        st.code(render_log, language="text")
