@@ -1,0 +1,7 @@
+ffmpeg
+libcairo2-dev
+texlive
+texlive-latex-extra
+texlive-fonts-extra
+texlive-latex-recommended
+texlive-science
